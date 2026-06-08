@@ -1,9 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using Suterusu.Configuration;
 using Suterusu.Models;
 
@@ -282,25 +284,13 @@ namespace Suterusu.Services
 
             try
             {
-                var request = new ChatCompletionRequest
-                {
-                    Model    = model,
-                    Messages = new List<ChatRequestMessage>(messages)
-                };
-
-                if (!string.IsNullOrWhiteSpace(endpoint.ReasoningEffort)
-                    && !endpoint.ReasoningEffort.Equals("default", StringComparison.OrdinalIgnoreCase))
-                {
-                    request.ReasoningEffort = endpoint.ReasoningEffort.Trim();
-                }
-
-                string json    = JsonSettings.SerializeCompact(request);
+                bool useNativeOllama = IsNativeOllamaChatEndpoint(endpoint.BaseUrl);
+                string json = useNativeOllama
+                    ? JsonSettings.SerializeCompact(CreateOllamaChatRequest(model, endpoint, messages))
+                    : JsonSettings.SerializeCompact(CreateChatCompletionRequest(model, endpoint, messages));
                 _logger.Debug($"serialized request JSON: {json}");
 
-                string baseUrl = endpoint.BaseUrl.TrimEnd('/');
-                string url = baseUrl.EndsWith("/chat/completions") 
-                    ? baseUrl 
-                    : baseUrl + "/chat/completions";
+                string url = BuildChatUrl(endpoint.BaseUrl);
 
                 _logger.Debug($"target URL: {url}");
 
@@ -328,45 +318,14 @@ namespace Suterusu.Services
 
                         if (!response.IsSuccessStatusCode)
                         {
-                            string errMsg = $"HTTP {(int)response.StatusCode}";
-                            try
-                            {
-                                var errResp = JsonSettings.Deserialize<ChatCompletionResponse>(body);
-                                if (errResp?.Error?.Message != null)
-                                    errMsg += $": {errResp.Error.Message}";
-                            }
-                            catch { /* ignore parse error */ }
+                            string errMsg = BuildHttpErrorMessage((int)response.StatusCode, body, useNativeOllama);
                             _logger.Debug($"error response: {errMsg}");
                             return AiSingleAttemptResult.Fail(errMsg);
                         }
 
-                        ChatCompletionResponse parsed;
-                        try
-                        {
-                            parsed = JsonSettings.Deserialize<ChatCompletionResponse>(body);
-                            _logger.Debug($"parsed response, choices count={parsed?.Choices?.Count ?? 0}");
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Debug($"JSON parse error: {ex.Message}");
-                            return AiSingleAttemptResult.Fail($"JSON parse error: {ex.Message}");
-                        }
-
-                        if (parsed?.Choices == null || parsed.Choices.Count == 0)
-                        {
-                            _logger.Debug("response has no choices");
-                            return AiSingleAttemptResult.Fail("Response has no choices.");
-                        }
-
-                        string content = parsed.Choices[0]?.Message?.Content;
-                        if (string.IsNullOrEmpty(content))
-                        {
-                            _logger.Debug("assistant returned empty content");
-                            return AiSingleAttemptResult.Fail("Assistant returned empty content.");
-                        }
-
-                        _logger.Debug($"success, content length={content.Length}");
-                        return AiSingleAttemptResult.Ok(content);
+                        return useNativeOllama
+                            ? ParseOllamaChatResponse(body)
+                            : ParseOpenAiChatResponse(body);
                     }
                 }
             }
@@ -394,6 +353,223 @@ namespace Suterusu.Services
             {
                 timeoutCts?.Dispose();
             }
+        }
+
+        private static ChatCompletionRequest CreateChatCompletionRequest(
+            string model,
+            EndpointConfig endpoint,
+            IReadOnlyList<ChatRequestMessage> messages)
+        {
+            var request = new ChatCompletionRequest
+            {
+                Model = model,
+                Messages = new List<ChatRequestMessage>(messages)
+            };
+
+            if (!string.IsNullOrWhiteSpace(endpoint.ReasoningEffort)
+                && !endpoint.ReasoningEffort.Equals("default", StringComparison.OrdinalIgnoreCase))
+            {
+                request.ReasoningEffort = endpoint.ReasoningEffort.Trim();
+            }
+
+            return request;
+        }
+
+        private static OllamaChatRequest CreateOllamaChatRequest(
+            string model,
+            EndpointConfig endpoint,
+            IReadOnlyList<ChatRequestMessage> messages)
+        {
+            return new OllamaChatRequest
+            {
+                Model = model,
+                Messages = ToOllamaChatMessages(messages),
+                Stream = false,
+                Think = endpoint.OllamaThink,
+                Options = new OllamaChatOptions { Temperature = 0.7 }
+            };
+        }
+
+        private static List<OllamaChatMessage> ToOllamaChatMessages(IReadOnlyList<ChatRequestMessage> messages)
+        {
+            var converted = new List<OllamaChatMessage>();
+
+            foreach (var message in messages)
+            {
+                var images = new List<string>();
+                converted.Add(new OllamaChatMessage
+                {
+                    Role = message.Role,
+                    Content = ToOllamaContent(message.Content, images),
+                    Images = images.Count > 0 ? images : null
+                });
+            }
+
+            return converted;
+        }
+
+        private static string ToOllamaContent(object content, List<string> images)
+        {
+            if (content == null)
+                return string.Empty;
+
+            var textParts = new List<string>();
+
+            if (content is string text)
+                return text;
+
+            if (content is IEnumerable parts)
+            {
+                foreach (var part in parts)
+                {
+                    var typedPart = part as ChatMessageContentPart;
+                    if (typedPart == null)
+                        continue;
+
+                    if (string.Equals(typedPart.Type, "text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrEmpty(typedPart.Text))
+                            textParts.Add(typedPart.Text);
+                        continue;
+                    }
+
+                    if (string.Equals(typedPart.Type, "image_url", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string image = ToOllamaImage(typedPart.ImageUrl?.Url);
+                        if (!string.IsNullOrWhiteSpace(image))
+                            images.Add(image);
+                    }
+                }
+            }
+
+            if (textParts.Count > 0 || images.Count > 0)
+                return string.Join("\n", textParts);
+
+            return content.ToString();
+        }
+
+        private static string ToOllamaImage(string imageUrl)
+        {
+            if (string.IsNullOrWhiteSpace(imageUrl))
+                return null;
+
+            imageUrl = imageUrl.Trim();
+            if (!imageUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                return imageUrl;
+
+            int commaIndex = imageUrl.IndexOf(',');
+            return commaIndex >= 0 && commaIndex < imageUrl.Length - 1
+                ? imageUrl.Substring(commaIndex + 1)
+                : null;
+        }
+
+        internal static bool IsNativeOllamaChatEndpoint(string baseUrl)
+        {
+            return !string.IsNullOrWhiteSpace(baseUrl)
+                && baseUrl.TrimEnd('/').EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static string BuildChatUrl(string baseUrl)
+        {
+            string trimmed = (baseUrl ?? string.Empty).TrimEnd('/');
+
+            if (trimmed.EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase)
+                || trimmed.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed;
+            }
+
+            return trimmed + "/chat/completions";
+        }
+
+        private string BuildHttpErrorMessage(int statusCode, string body, bool useNativeOllama)
+        {
+            string errMsg = $"HTTP {statusCode}";
+
+            try
+            {
+                if (useNativeOllama)
+                {
+                    var obj = JObject.Parse(body);
+                    var errorToken = obj["error"];
+                    if (errorToken != null)
+                    {
+                        string message = errorToken.Type == JTokenType.String
+                            ? errorToken.ToString()
+                            : errorToken["message"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(message))
+                            errMsg += $": {message}";
+                    }
+                }
+                else
+                {
+                    var errResp = JsonSettings.Deserialize<ChatCompletionResponse>(body);
+                    if (errResp?.Error?.Message != null)
+                        errMsg += $": {errResp.Error.Message}";
+                }
+            }
+            catch
+            {
+                // Ignore parse errors; the HTTP status still carries the failure.
+            }
+
+            return errMsg;
+        }
+
+        private AiSingleAttemptResult ParseOpenAiChatResponse(string body)
+        {
+            ChatCompletionResponse parsed;
+            try
+            {
+                parsed = JsonSettings.Deserialize<ChatCompletionResponse>(body);
+                _logger.Debug($"parsed response, choices count={parsed?.Choices?.Count ?? 0}");
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug($"JSON parse error: {ex.Message}");
+                return AiSingleAttemptResult.Fail($"JSON parse error: {ex.Message}");
+            }
+
+            if (parsed?.Choices == null || parsed.Choices.Count == 0)
+            {
+                _logger.Debug("response has no choices");
+                return AiSingleAttemptResult.Fail("Response has no choices.");
+            }
+
+            string content = parsed.Choices[0]?.Message?.Content;
+            if (string.IsNullOrEmpty(content))
+            {
+                _logger.Debug("assistant returned empty content");
+                return AiSingleAttemptResult.Fail("Assistant returned empty content.");
+            }
+
+            _logger.Debug($"success, content length={content.Length}");
+            return AiSingleAttemptResult.Ok(content);
+        }
+
+        private AiSingleAttemptResult ParseOllamaChatResponse(string body)
+        {
+            OllamaChatResponse parsed;
+            try
+            {
+                parsed = JsonSettings.Deserialize<OllamaChatResponse>(body);
+                _logger.Debug($"parsed Ollama response, done={parsed?.Done}");
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug($"JSON parse error: {ex.Message}");
+                return AiSingleAttemptResult.Fail($"JSON parse error: {ex.Message}");
+            }
+
+            string content = parsed?.Message?.Content;
+            if (string.IsNullOrEmpty(content))
+            {
+                _logger.Debug("Ollama assistant returned empty content");
+                return AiSingleAttemptResult.Fail("Assistant returned empty content.");
+            }
+
+            _logger.Debug($"success, content length={content.Length}");
+            return AiSingleAttemptResult.Ok(content);
         }
 
         public void Dispose()

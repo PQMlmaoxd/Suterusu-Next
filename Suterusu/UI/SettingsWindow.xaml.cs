@@ -45,7 +45,7 @@ namespace Suterusu.UI
                 LstPriority, PnlEntryEdit, LblEntryEditTitle,
                 TxtEntryName, TxtEntryBaseUrl, PwdEntryApiKey,
                 TxtEntryApiKey, CboEntryModel, CboEntryCapability, CboEntryReasoning, TxtEntryReasoningCustom,
-                BtnFetchEntryModels, CboEntryPreset,
+                ChkEntryOllamaThink, BtnFetchEntryModels, CboEntryPreset,
                 ShowValidation, HideValidation,
                 () => _configManager.Current?.CliProxy?.ApiKey ?? string.Empty,
                 _logger);

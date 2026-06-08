@@ -10,6 +10,7 @@ namespace Suterusu.Models
         public string Model   { get; set; }
         public ModelCapability Capability { get; set; }
         public string ReasoningEffort { get; set; } = "default";
+        public bool OllamaThink { get; set; }
 
         public ModelEntry Clone()
         {
@@ -20,7 +21,8 @@ namespace Suterusu.Models
                 ApiKey  = ApiKey,
                 Model   = Model,
                 Capability = Capability,
-                ReasoningEffort = ReasoningEffort
+                ReasoningEffort = ReasoningEffort,
+                OllamaThink = OllamaThink
             };
         }
 
@@ -33,7 +35,8 @@ namespace Suterusu.Models
                 ApiKey  = ApiKey,
                 Models  = new List<string> { Model },
                 Capability = Capability,
-                ReasoningEffort = ReasoningEffort
+                ReasoningEffort = ReasoningEffort,
+                OllamaThink = OllamaThink
             };
         }
     }

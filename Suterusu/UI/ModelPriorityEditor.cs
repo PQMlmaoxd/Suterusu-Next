@@ -27,6 +27,7 @@ namespace Suterusu.UI
         private readonly ComboBox _capabilityCombo;
         private readonly ComboBox _reasoningCombo;
         private readonly TextBox _reasoningCustomBox;
+        private readonly CheckBox _ollamaThinkCheck;
         private readonly Button _fetchButton;
         private readonly ComboBox _presetCombo;
         private readonly Action<string> _showValidation;
@@ -57,6 +58,7 @@ namespace Suterusu.UI
             ComboBox capabilityCombo,
             ComboBox reasoningCombo,
             TextBox reasoningCustomBox,
+            CheckBox ollamaThinkCheck,
             Button fetchButton,
             ComboBox presetCombo,
             Action<string> showValidation,
@@ -75,6 +77,7 @@ namespace Suterusu.UI
             _capabilityCombo = capabilityCombo;
             _reasoningCombo = reasoningCombo;
             _reasoningCustomBox = reasoningCustomBox;
+            _ollamaThinkCheck = ollamaThinkCheck;
             _fetchButton = fetchButton;
             _presetCombo = presetCombo;
             _showValidation = showValidation;
@@ -89,6 +92,7 @@ namespace Suterusu.UI
             _modelCombo.LostFocus += OnModelLostFocus;
             _reasoningCombo.SelectionChanged += OnReasoningChanged;
             ResetReasoningOptions(DefaultReasoningEffort);
+            UpdateOllamaThinkVisibility();
         }
 
         public bool IsEditing => _editingIndex >= -1;
@@ -199,7 +203,9 @@ namespace Suterusu.UI
                 ApiKey = apiKey,
                 Model = model,
                 Capability = capability,
-                ReasoningEffort = reasoningEffort
+                ReasoningEffort = reasoningEffort,
+                OllamaThink = AiClient.IsNativeOllamaChatEndpoint(url)
+                    && (_ollamaThinkCheck.IsChecked ?? false)
             };
 
             if (_editingIndex == -1)
@@ -235,10 +241,7 @@ namespace Suterusu.UI
                 return;
             }
 
-            string modelsUrl = rawUrl.TrimEnd('/');
-            if (modelsUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
-                modelsUrl = modelsUrl.Substring(0, modelsUrl.Length - "/chat/completions".Length);
-            modelsUrl += "/models";
+            string modelsUrl = BuildModelsUrl(rawUrl);
 
             string apiKey = GetApiKey();
             _logger.Debug($"Fetching models from {modelsUrl}. Auth header present: {!string.IsNullOrWhiteSpace(apiKey)}.");
@@ -263,8 +266,8 @@ namespace Suterusu.UI
 
                         string json = await response.Content.ReadAsStringAsync();
                         var obj = JObject.Parse(json);
-                        var data = obj["data"] as JArray;
-                        _logger.Debug($"Model fetch parsed. data_count={data?.Count ?? 0}.");
+                        var data = GetModelMetadataArray(obj);
+                        _logger.Debug($"Model fetch parsed. model_count={data?.Count ?? 0}.");
 
                         _modelCombo.Items.Clear();
                         _reasoningEffortsByModel.Clear();
@@ -272,7 +275,7 @@ namespace Suterusu.UI
                         {
                             foreach (var item in data)
                             {
-                                string id = (string)item["id"];
+                                string id = GetModelId(item);
                                 if (!string.IsNullOrWhiteSpace(id))
                                 {
                                     _modelCombo.Items.Add(id);
@@ -333,6 +336,42 @@ namespace Suterusu.UI
             }
         }
 
+        internal static string BuildModelsUrl(string rawUrl)
+        {
+            string modelsUrl = (rawUrl ?? string.Empty).Trim().TrimEnd('/');
+
+            if (modelsUrl.EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase))
+                return modelsUrl.Substring(0, modelsUrl.Length - "/chat".Length) + "/tags";
+
+            if (modelsUrl.EndsWith("/api/generate", StringComparison.OrdinalIgnoreCase))
+                return modelsUrl.Substring(0, modelsUrl.Length - "/generate".Length) + "/tags";
+
+            if (modelsUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+                modelsUrl = modelsUrl.Substring(0, modelsUrl.Length - "/chat/completions".Length);
+
+            return modelsUrl + "/models";
+        }
+
+        private static JArray GetModelMetadataArray(JObject obj)
+        {
+            return obj?["data"] as JArray
+                ?? obj?["models"] as JArray;
+        }
+
+        internal static string GetModelId(JToken modelMetadata)
+        {
+            if (modelMetadata == null || modelMetadata.Type == JTokenType.Null)
+                return null;
+
+            if (modelMetadata.Type == JTokenType.String)
+                return modelMetadata.ToString().Trim();
+
+            return ((string)GetObjectProperty(modelMetadata, "id")
+                    ?? (string)GetObjectProperty(modelMetadata, "name")
+                    ?? (string)GetObjectProperty(modelMetadata, "model"))
+                ?.Trim();
+        }
+
         private void OnPresetChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_isSyncingPreset)
@@ -340,7 +379,10 @@ namespace Suterusu.UI
 
             var preset = _presetCombo.SelectedItem as EndpointPreset;
             if (preset == null || string.IsNullOrWhiteSpace(preset.BaseUrl))
+            {
+                UpdateOllamaThinkVisibility();
                 return;
+            }
 
             _isApplyingPreset = true;
             _urlBox.Text = preset.BaseUrl;
@@ -359,6 +401,7 @@ namespace Suterusu.UI
                     _keyBox.Password = key;
             }
             _isApplyingPreset = false;
+            UpdateOllamaThinkVisibility();
         }
 
         private void OnUrlChanged(object sender, TextChangedEventArgs e)
@@ -376,6 +419,8 @@ namespace Suterusu.UI
                 _presetCombo.SelectedItem = customPreset;
                 _isSyncingPreset = false;
             }
+
+            UpdateOllamaThinkVisibility();
         }
 
         private void ClearForm()
@@ -387,12 +432,14 @@ namespace Suterusu.UI
             _modelCombo.Text = string.Empty;
             _modelCombo.Items.Clear();
             _reasoningEffortsByModel.Clear();
+            _ollamaThinkCheck.IsChecked = false;
             SetCapability(ModelCapability.Auto);
             ResetReasoningOptions(DefaultReasoningEffort);
 
             _isSyncingPreset = true;
             _presetCombo.SelectedIndex = -1;
             _isSyncingPreset = false;
+            UpdateOllamaThinkVisibility();
         }
 
         private void PopulateForm(ModelEntry entry)
@@ -405,6 +452,7 @@ namespace Suterusu.UI
             _modelCombo.Text = entry.Model ?? string.Empty;
             SetCapability(entry.Capability);
             ResetReasoningOptions(string.IsNullOrWhiteSpace(entry.ReasoningEffort) ? DefaultReasoningEffort : entry.ReasoningEffort.Trim());
+            _ollamaThinkCheck.IsChecked = entry.OllamaThink;
 
             var matchedPreset = _presetCombo.Items
                 .OfType<EndpointPreset>()
@@ -417,6 +465,7 @@ namespace Suterusu.UI
             _presetCombo.SelectedItem = matchedPreset
                 ?? _presetCombo.Items.OfType<EndpointPreset>().FirstOrDefault(p => p.Name == "Custom");
             _isSyncingPreset = false;
+            UpdateOllamaThinkVisibility();
         }
 
         private void ShowPanel()
@@ -429,6 +478,25 @@ namespace Suterusu.UI
         {
             _editPanel.Visibility = Visibility.Collapsed;
             _editingIndex = -2;
+        }
+
+        private void UpdateOllamaThinkVisibility()
+        {
+            bool isOllama = IsOllamaPresetSelected()
+                || AiClient.IsNativeOllamaChatEndpoint(_urlBox.Text);
+
+            _ollamaThinkCheck.Visibility = isOllama
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+            if (!isOllama)
+                _ollamaThinkCheck.IsChecked = false;
+        }
+
+        private bool IsOllamaPresetSelected()
+        {
+            var preset = _presetCombo.SelectedItem as EndpointPreset;
+            return string.Equals(preset?.Name, "Ollama", StringComparison.OrdinalIgnoreCase);
         }
 
         public string GetApiKey()
@@ -600,17 +668,17 @@ namespace Suterusu.UI
         public static IReadOnlyList<string> ExtractReasoningEfforts(JToken modelMetadata)
         {
             var values = new List<string>();
-            AddReasoningValues(values, modelMetadata?["reasoning_efforts"]);
-            AddReasoningValues(values, modelMetadata?["reasoning_effort"]);
-            AddReasoningValues(values, modelMetadata?["supported_reasoning_efforts"]);
-            AddReasoningValues(values, modelMetadata?["supported_reasoning_levels"]);
-            AddReasoningValues(values, modelMetadata?["reasoning"]?["levels"]);
-            AddReasoningValues(values, modelMetadata?["reasoning"]?["efforts"]);
-            AddReasoningValues(values, modelMetadata?["reasoning"]?["values"]);
-            AddReasoningValues(values, modelMetadata?["reasoning"]?["supported_efforts"]);
-            AddReasoningValues(values, modelMetadata?["capabilities"]?["reasoning_efforts"]);
-            AddReasoningValues(values, modelMetadata?["capabilities"]?["reasoning"]?["levels"]);
-            AddReasoningValues(values, modelMetadata?["capabilities"]?["reasoning"]?["efforts"]);
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "reasoning_efforts"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "reasoning_effort"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "supported_reasoning_efforts"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "supported_reasoning_levels"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "reasoning", "levels"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "reasoning", "efforts"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "reasoning", "values"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "reasoning", "supported_efforts"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "capabilities", "reasoning_efforts"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "capabilities", "reasoning", "levels"));
+            AddReasoningValues(values, GetObjectProperty(modelMetadata, "capabilities", "reasoning", "efforts"));
 
             return values;
         }
@@ -642,11 +710,11 @@ namespace Suterusu.UI
         {
             var values = new List<string>();
             AddReasoningEffortsFromToken(values, details);
-            AddReasoningEffortsFromToken(values, details?["data"]);
-            AddReasoningEffortsFromToken(values, details?["result"]);
+            AddReasoningEffortsFromToken(values, GetObjectProperty(details, "data"));
+            AddReasoningEffortsFromToken(values, GetObjectProperty(details, "result"));
 
-            var endpoints = details?["data"]?["endpoints"] as JArray
-                ?? details?["endpoints"] as JArray;
+            var endpoints = GetObjectProperty(details, "data", "endpoints") as JArray
+                ?? GetObjectProperty(details, "endpoints") as JArray;
             if (endpoints != null)
             {
                 foreach (var endpoint in endpoints)
@@ -664,9 +732,9 @@ namespace Suterusu.UI
 
         private static string GetModelDetailsUrl(JToken modelMetadata, string modelsUrl)
         {
-            string rawDetailsUrl = (string)modelMetadata?["links"]?["details"]
-                ?? (string)modelMetadata?["details_url"]
-                ?? (string)modelMetadata?["detailsUrl"];
+            string rawDetailsUrl = (string)GetObjectProperty(modelMetadata, "links", "details")
+                ?? (string)GetObjectProperty(modelMetadata, "details_url")
+                ?? (string)GetObjectProperty(modelMetadata, "detailsUrl");
 
             if (string.IsNullOrWhiteSpace(rawDetailsUrl))
                 return null;
@@ -683,6 +751,20 @@ namespace Suterusu.UI
                 return relativeUri.ToString();
 
             return null;
+        }
+
+        private static JToken GetObjectProperty(JToken token, params string[] path)
+        {
+            JToken current = token;
+            foreach (string propertyName in path)
+            {
+                if (current == null || current.Type != JTokenType.Object)
+                    return null;
+
+                current = current[propertyName];
+            }
+
+            return current;
         }
 
         private static void AddReasoningValues(List<string> values, JToken token)

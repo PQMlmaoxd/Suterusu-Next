@@ -48,10 +48,10 @@ namespace Suterusu.Models
                 new EndpointPreset
                 {
                     Name = "Ollama",
-                    BaseUrl = "http://localhost:11434/v1/chat/completions",
+                    BaseUrl = "http://localhost:11434/api/chat",
                     DefaultModel = "llama3.2",
                     RequiresApiKey = false,
-                    Description = "Local Ollama instance - Private, offline, no API key needed"
+                    Description = "Local Ollama instance - Native API, private, offline, no API key needed"
                 },
                 new EndpointPreset
                 {
