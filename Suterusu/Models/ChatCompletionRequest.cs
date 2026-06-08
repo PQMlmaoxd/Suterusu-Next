@@ -15,4 +15,31 @@ namespace Suterusu.Models
 
         public string ReasoningEffort { get; set; }
     }
+
+    public class OllamaChatRequest
+    {
+        public string Model { get; set; }
+
+        public List<OllamaChatMessage> Messages { get; set; }
+
+        public bool Stream { get; set; }
+
+        public bool Think { get; set; }
+
+        public OllamaChatOptions Options { get; set; }
+    }
+
+    public class OllamaChatMessage
+    {
+        public string Role { get; set; }
+
+        public string Content { get; set; }
+
+        public List<string> Images { get; set; }
+    }
+
+    public class OllamaChatOptions
+    {
+        public double? Temperature { get; set; }
+    }
 }

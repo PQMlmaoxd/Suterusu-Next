@@ -259,6 +259,10 @@
                                           <ComboBox x:Name="CboEntryReasoning" HorizontalAlignment="Left" Width="180" />
                                           <TextBox x:Name="TxtEntryReasoningCustom" Visibility="Collapsed" Width="180" HorizontalAlignment="Left" />
                                           <TextBlock Style="{StaticResource HintStyle}" Text="Fetch Models can populate supported levels when the endpoint exposes them. Default omits reasoning_effort." />
+                                          <CheckBox x:Name="ChkEntryOllamaThink"
+                                                    Content="Enable Ollama thinking"
+                                                    Visibility="Collapsed"
+                                                    Margin="0,8,0,0" />
                                           <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                             <Button Style="{StaticResource PrimaryButtonStyle}"   Content="Confirm" Click="OnConfirmEntry" />
                                             <Button Style="{StaticResource SecondaryButtonStyle}" Content="Discard" Click="OnDiscardEntry" Margin="6,0,0,0" />

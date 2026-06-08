@@ -27,6 +27,14 @@ namespace Suterusu.Tests
             Assert.Equal("default", entry.ReasoningEffort);
         }
 
+        [Fact]
+        public void ModelEntry_DefaultOllamaThink_IsFalse()
+        {
+            var entry = new ModelEntry();
+
+            Assert.False(entry.OllamaThink);
+        }
+
         // -----------------------------------------------------------------------
         // CreateDefault
         // -----------------------------------------------------------------------
@@ -155,6 +163,35 @@ namespace Suterusu.Tests
 
             Assert.Equal("high", config.ModelPriority[0].ReasoningEffort);
             Assert.Equal("default", config.ModelPriority[1].ReasoningEffort);
+        }
+
+        [Fact]
+        public void Normalize_MigratesLegacyOllamaPresetUrl()
+        {
+            var config = new AppConfig
+            {
+                ModelPriority = new List<ModelEntry>
+                {
+                    new ModelEntry
+                    {
+                        Name = "Ollama",
+                        BaseUrl = "http://localhost:11434/v1/chat/completions",
+                        Model = "llama3.2"
+                    },
+                    new ModelEntry
+                    {
+                        Name = "Custom",
+                        BaseUrl = "http://localhost:11434/v1/chat/completions",
+                        Model = "llama3.2"
+                    }
+                },
+                HistoryLimit = 5
+            };
+
+            config.Normalize();
+
+            Assert.Equal("http://localhost:11434/api/chat", config.ModelPriority[0].BaseUrl);
+            Assert.Equal("http://localhost:11434/v1/chat/completions", config.ModelPriority[1].BaseUrl);
         }
 
         // -----------------------------------------------------------------------

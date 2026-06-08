@@ -24,4 +24,13 @@ namespace Suterusu.Models
 
         public string Code { get; set; }
     }
+
+    public class OllamaChatResponse
+    {
+        public string Model { get; set; }
+
+        public OllamaChatMessage Message { get; set; }
+
+        public bool Done { get; set; }
+    }
 }

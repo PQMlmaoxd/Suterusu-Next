@@ -167,6 +167,118 @@ namespace Suterusu.Tests
             }
         }
 
+        [Fact]
+        public async Task SendAsync_OpenAiCompatibleEndpoint_DoesNotSerializeOllamaFields()
+        {
+            var handler = new CapturingHandler((request, call) => Success("plain"));
+            using (var client = new AiClient(new TestLogger(), handler))
+            {
+                var config = CreateConfig(500);
+                var messages = new List<ChatMessage>
+                {
+                    new ChatMessage { Role = "user", Content = "hello" }
+                };
+
+                AiResponseResult result = await client.SendAsync(config, messages, CancellationToken.None);
+
+                Assert.True(result.Success);
+                Assert.Equal("https://example.test/v1/chat/completions", handler.RequestUris[0].AbsoluteUri);
+
+                JObject json = JObject.Parse(handler.Bodies[0]);
+                Assert.Null(json["think"]);
+                Assert.Null(json["stream"]);
+                Assert.Null(json["options"]);
+            }
+        }
+
+        [Theory]
+        [InlineData("https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/chat/completions")]
+        [InlineData("https://example.test/v1", "https://example.test/v1/chat/completions")]
+        [InlineData("http://127.0.0.1:8317/v1", "http://127.0.0.1:8317/v1/chat/completions")]
+        [InlineData("http://localhost:8080/v1/chat/completions", "http://localhost:8080/v1/chat/completions")]
+        [InlineData("http://localhost:11434/api/chat", "http://localhost:11434/api/chat")]
+        public void BuildChatUrl_PreservesPresetRouting(string baseUrl, string expected)
+        {
+            Assert.Equal(expected, AiClient.BuildChatUrl(baseUrl));
+        }
+
+        [Fact]
+        public async Task SendAsync_UsesNativeOllamaChatApi()
+        {
+            var handler = new CapturingHandler((request, call) => OllamaSuccess("native response"));
+            using (var client = new AiClient(new TestLogger(), handler))
+            {
+                var config = CreateOllamaConfig();
+                config.ModelPriority[0].ReasoningEffort = "high";
+                var messages = new List<ChatMessage>
+                {
+                    new ChatMessage { Role = "user", Content = "hello" }
+                };
+
+                AiResponseResult result = await client.SendAsync(config, messages, CancellationToken.None);
+
+                Assert.True(result.Success);
+                Assert.Equal("native response", result.Content);
+                Assert.Equal("llama3.2", result.ModelUsed);
+                Assert.Equal("http://localhost:11434/api/chat", handler.RequestUris[0].AbsoluteUri);
+
+                JObject json = JObject.Parse(handler.Bodies[0]);
+                Assert.Equal("llama3.2", json["model"]?.ToString());
+                Assert.Equal("hello", json["messages"]?[0]?["content"]?.ToString());
+                Assert.False((bool)json["stream"]);
+                Assert.False((bool)json["think"]);
+                Assert.Equal("0.7", json["options"]?["temperature"]?.ToString());
+                Assert.Null(json["reasoning_effort"]);
+            }
+        }
+
+        [Fact]
+        public async Task SendAsync_SerializesNativeOllamaThinkWhenEnabled()
+        {
+            var handler = new CapturingHandler((request, call) => OllamaSuccess("thinking response"));
+            using (var client = new AiClient(new TestLogger(), handler))
+            {
+                var config = CreateOllamaConfig();
+                config.ModelPriority[0].OllamaThink = true;
+                var messages = new List<ChatMessage>
+                {
+                    new ChatMessage { Role = "user", Content = "hello" }
+                };
+
+                AiResponseResult result = await client.SendAsync(config, messages, CancellationToken.None);
+
+                Assert.True(result.Success);
+                JObject json = JObject.Parse(handler.Bodies[0]);
+                Assert.True((bool)json["think"]);
+            }
+        }
+
+        [Fact]
+        public async Task SendVisionAsync_ConvertsImageUrlContentForNativeOllama()
+        {
+            var handler = new CapturingHandler((request, call) => OllamaSuccess("vision native"));
+            using (var client = new AiClient(new TestLogger(), handler))
+            {
+                var config = CreateOllamaConfig();
+                config.ModelPriority[0].Capability = ModelCapability.Vision;
+                var messages = new List<ChatRequestMessage>
+                {
+                    new ChatRequestMessage("user", new object[]
+                    {
+                        ChatMessageContentPart.TextPart("read this"),
+                        ChatMessageContentPart.ImageUrlPart("data:image/png;base64,abc")
+                    })
+                };
+
+                AiResponseResult result = await client.SendVisionAsync(config, messages, CancellationToken.None);
+
+                Assert.True(result.Success);
+                JObject json = JObject.Parse(handler.Bodies[0]);
+                Assert.Equal("read this", json["messages"]?[0]?["content"]?.ToString());
+                Assert.Equal("abc", json["messages"]?[0]?["images"]?[0]?.ToString());
+            }
+        }
+
         private static AppConfig CreateConfig(int timeoutMs)
         {
             return new AppConfig
@@ -208,12 +320,44 @@ namespace Suterusu.Tests
             }.Normalize();
         }
 
+        private static AppConfig CreateOllamaConfig()
+        {
+            return new AppConfig
+            {
+                ModelPriority = new List<ModelEntry>
+                {
+                    new ModelEntry
+                    {
+                        Name = "Ollama",
+                        BaseUrl = "http://localhost:11434/api/chat",
+                        Model = "llama3.2",
+                        Capability = ModelCapability.Auto
+                    }
+                },
+                MultiRequestMode = MultiRequestMode.Sequential,
+                MultiRequestTimeoutMs = 500,
+                HistoryLimit = 10,
+                SystemPrompt = "You are a helpful assistant."
+            }.Normalize();
+        }
+
         private static HttpResponseMessage Success(string content)
         {
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
                     "{\"choices\":[{\"message\":{\"content\":\"" + content + "\"}}]}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
+
+        private static HttpResponseMessage OllamaSuccess(string content)
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"model\":\"llama3.2\",\"message\":{\"role\":\"assistant\",\"content\":\"" + content + "\"},\"done\":true}",
                     Encoding.UTF8,
                     "application/json")
             };
@@ -248,6 +392,7 @@ namespace Suterusu.Tests
             private int _calls;
 
             public List<string> Bodies { get; } = new List<string>();
+            public List<Uri> RequestUris { get; } = new List<Uri>();
 
             public CapturingHandler(Func<HttpRequestMessage, int, HttpResponseMessage> responseFactory)
             {
@@ -257,6 +402,7 @@ namespace Suterusu.Tests
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 _calls++;
+                RequestUris.Add(request.RequestUri);
                 Bodies.Add(await request.Content.ReadAsStringAsync().ConfigureAwait(false));
                 return _responseFactory(request, _calls);
             }

@@ -10,5 +10,6 @@ namespace Suterusu.Models
         public List<string> Models { get; set; }
         public ModelCapability Capability { get; set; }
         public string ReasoningEffort { get; set; }
+        public bool OllamaThink { get; set; }
     }
 }

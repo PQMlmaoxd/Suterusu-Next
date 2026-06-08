@@ -116,6 +116,10 @@ namespace Suterusu.Configuration
 
     public class AppConfig
     {
+        private const string OllamaPresetName = "Ollama";
+        private const string LegacyOllamaOpenAiUrl = "http://localhost:11434/v1/chat/completions";
+        private const string NativeOllamaChatUrl = "http://localhost:11434/api/chat";
+
         /// <summary>
         /// Flat ordered list of (endpoint, model) pairs used by all multi-request modes.
         /// Models are tried top-to-bottom in Sequential mode, rotated in RoundRobin, raced in Fastest.
@@ -321,6 +325,8 @@ namespace Suterusu.Configuration
 
             foreach (var entry in ModelPriority)
             {
+                NormalizeLegacyOllamaPresetEntry(entry);
+
                 if (!Enum.IsDefined(typeof(ModelCapability), entry.Capability))
                     entry.Capability = ModelCapability.Auto;
 
@@ -332,6 +338,18 @@ namespace Suterusu.Configuration
             RemoveGeneratedCliProxyModelEntries();
 
             return this;
+        }
+
+        private static void NormalizeLegacyOllamaPresetEntry(ModelEntry entry)
+        {
+            if (entry == null)
+                return;
+
+            if (string.Equals(entry.Name?.Trim(), OllamaPresetName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(entry.BaseUrl?.Trim().TrimEnd('/'), LegacyOllamaOpenAiUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                entry.BaseUrl = NativeOllamaChatUrl;
+            }
         }
 
         private void NormalizeCdpSettings()
